@@ -6,7 +6,7 @@ import einops
 from enum import Enum
 import math
 import torch.nn.functional as F
-from vLSTM import *
+from model.VisionLSTM import *
 
 class EncoderBottleneck(nn.Module):
     def __init__(self, in_channels, out_channels, stride=1, base_width=64):
@@ -135,21 +135,30 @@ class Encoder(nn.Module):
 
     def forward(self, x):
         x = self.conv1(x) # after conv1 torch.Size([1, 64, 48, 48, 48])
+        # print(x.shape)
         x = self.norm1(x)
         x1 = self.relu(x)
 
         x2 = self.encoder1(x1) # after encoder1 torch.Size([1, 128, 24, 24, 24])
-
+        # print(x2.shape)
+        # input()
         x3 = self.encoder2(x2)
         x = self.encoder3(x3)
+        #
+        # print(x.size())
         x = self.patch_embed(x)
+        # print(x.size())
         x = einops.rearrange(x, "b ... d -> b (...) d")
+        # print(x.size())
 
         for block in self.blocks:
             x = block(x)
         x = self.legacy_norm(x)
         x = self.norm(x) # torch.Size([1, 9, 256])
+        # print(x.shape)
         x = rearrange(x, "b (x y) c -> b c x y", x=self.output_shape[0], y=self.output_shape[0])
+        # print(x.shape)
+        # input()
         return x, x1, x2, x3
 
 
@@ -157,8 +166,7 @@ class DecoderBottleneck(nn.Module):
     def __init__(self, in_channels, out_channels, scale_factor=2):
         super().__init__()
 
-        self.upsample = nn.Upsample(scale_factor=scale_factor, mode='bilinear', align_corners=True)
-        self.upsample1 = nn.Upsample(scale_factor=scale_factor * 2, mode='bilinear', align_corners=True)
+        self.upsample = nn.Upsample(scale_factor=scale_factor*2, mode='bilinear', align_corners=True)
         self.layer = nn.Sequential(
             nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=1, padding=1),
             nn.BatchNorm2d(out_channels),
@@ -169,17 +177,18 @@ class DecoderBottleneck(nn.Module):
         )
 
     def forward(self, x, x_concat=None):
-        if x.shape[2] == 3:
-            x = self.upsample1(x)
+        # print(x.size(), x_concat.size() if x_concat is not None else None)
+        if x_concat is not None:
+            target_size = x_concat.shape[2:]
+            x = F.interpolate(x, size=target_size, mode='bilinear', align_corners=True)
         else:
             x = self.upsample(x)
-        # print(x.size(), x_concat.size())
+        # print(x.size(), x_concat.size() if x_concat is not None else None)
         if x_concat is not None:
             x = torch.cat([x_concat, x], dim=1)
-
+        
         x = self.layer(x)
         return x
-
 
 class Decoder(nn.Module):
     def __init__(self, out_channels, class_num):
@@ -190,7 +199,7 @@ class Decoder(nn.Module):
         self.decoder3 = DecoderBottleneck(out_channels * 2, int(out_channels * 1 / 2))
         self.decoder4 = DecoderBottleneck(int(out_channels * 1 / 2), int(out_channels * 1 / 8))
 
-        self.conv1 = nn.Conv2d(int(out_channels * 1 / 8), class_num, kernel_size=1)
+        self.conv1 = nn.Conv2d(int(out_channels * 1 / 8), class_num, kernel_size=1, stride = 2)
 
     def forward(self, x, x1, x2, x3):
         x = self.decoder1(x, x3)
@@ -216,6 +225,7 @@ class UVixLSTM(nn.Module):
 
     def forward(self, x):
         x, x1, x2, x3 = self.encoder(x)
+            # print(x.size(), x1.size(), x2.size(), x3.size())
         x = self.decoder(x, x1, x2, x3)
 
         return x
